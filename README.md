@@ -17,6 +17,6 @@ Data obtained from the SFMTA "Transit Vehicle Location History (Current Year)" d
 Claude was used to reason with the research question, and on the methodology on understanding how avg. speed is related to distance of vehicle from a certain point, only.
 
 ## To run this project:
-1. Open `sfmta-transit-speed-analysis.Rproj` in RStudio
-2. Run `R/fetch_and_clean_data.R` to pull and clean the data
+1. Clone the project repository
+2. Open the folder in RStudio
 3. Render `paper.qmd`
