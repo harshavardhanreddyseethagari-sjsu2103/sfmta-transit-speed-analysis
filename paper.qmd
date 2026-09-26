@@ -1,0 +1,173 @@
+---
+title: "Does Transit Vehicle Speed Vary with Distance from Downtown San Francisco?"
+subtitle: "A Simple Linear Regression Analysis of SFMTA Vehicle Location Data"
+author: "Harshavardhan Reddy Seethagari"
+thanks: "Project repository available at: https://github.com/harshavardhanreddyseethagari-sjsu2103/sfmta-transit-speed-analysis"
+date: today
+date-format: long
+abstract: "Traffic congestion slows public transit and raises costs for riders, logistics operators, and city planners alike. Using GPS ping data from San Francisco Municipal Transportation Agency (SFMTA) transit vehicles, we check whether a vehicle's average speed, while moving, is associated with its distance from downtown San Francisco. For this purpose, we use one week of vehicle location data (June 1-7, 2021) and fit a simple linear regression of average speed on distance from a fixed downtown reference point (Civic Center). The results show a statistically significant positive association: speed tends to increase with distance from downtown, though distance alone explains only about 3% of the variation in speed. This direction and significance hold regardless of the specific reference point used. This paper discusses what this does and does not tell us about congestion in the city, and what additional data or variables would be needed to answer the question more completely."
+format: 
+  pdf:
+    geometry: margin=1in
+bibliography: references.bib
+number-sections: true
+---
+
+```{r}
+#| include: false
+#| warning: false
+#| message: false
+# load libraries
+library(tidyverse)
+library(httr)
+library(jsonlite)
+library(ggpubr)
+library(patchwork)
+base_url <- "https://data.sf.gov/resource/x344-v6h6.json"
+resp <- GET(base_url, query = list(
+  `$where` = "vehicle_position_date_time between '2021-06-01T00:00:00' and '2021-06-07T23:59:59'",
+  `$limit` = 50000
+))
+raw_sample <- fromJSON(content(resp, as = "text", encoding = "UTF-8"))
+
+downtown_lon <- -122.4193
+downtown_lat <- 37.7793
+
+sample_data <- raw_sample |>
+  mutate(
+    loc_x = as.numeric(loc_x),
+    loc_y = as.numeric(loc_y),
+    average_speed = as.numeric(average_speed)
+  ) |>
+  filter(
+    average_speed > 0,
+    loc_y > 37.70, loc_y < 37.83,
+    loc_x > -122.52, loc_x < -122.36
+  ) |>
+  mutate(
+    dist_km = sqrt(
+      ((loc_y - downtown_lat) * 111.32)^2 +
+        ((loc_x - downtown_lon) * 111.32 * cos(downtown_lat * pi / 180))^2
+    )
+  )
+```
+
+# Introduction
+
+Traffic congestion in a city like San Francisco does not affect every location equally. It costs commuters time, raises costs for delivery and logistics operators, and makes it harder for transit agencies to keep to schedule. Transit riders in particular are a captive audience: unlike drivers with personal vehicles, they cannot reroute around slow traffic, so a bus or train's speed directly determines how long a trip takes.
+
+A natural place to look for slow transit is downtown. Dense streets, frequent intersections, and heavier pedestrian and vehicle traffic all make downtown cores a plausible source of slower transit speeds, consistent with prior transit operations research showing downtown segments acting as speed bottlenecks [@levinson1983; @sfcta2025]. What is less clear is how much of the variation in transit speed is actually explained by downtown location on its own, versus how much is driven by other factors like route, vehicle type, time of day, or day of week. Most public discussion treats "downtown is slower" as self-evident without quantifying it, which leaves a gap between intuition and an actual measurement of how strong that relationship is and how much it explains.
+
+This paper addresses that gap using GPS location data from SFMTA transit vehicles collected over one week (June 1–7, 2021). We measure the distance between each vehicle's reported position and a fixed downtown reference point (San Francisco's Civic Center), and fit a simple linear regression of vehicle speed on that distance. We find a statistically significant positive association between the two: vehicles farther from downtown tend to move faster while in motion, and this direction holds regardless of which downtown reference point is used. However, distance alone explains only a small share (about 3%) of the variation in speed, which suggests that while the "downtown is slower" intuition is directionally correct, distance from downtown is far from the whole story: most of the variation in transit speed comes from something other than simple proximity to downtown, which has implications for how narrowly "target downtown" interventions should be scoped.
+
+@sec-data introduces the transit vehicle location data used in this analysis and describes how the key variables were constructed. @sec-methods describes the simple linear regression model used to relate speed to distance. @sec-results-discussion presents the fitted model and test results, checks how sensitive the results are to the choice of downtown reference point, and interprets these results in light of the original research question, including the limitations of the analysis.
+
+# Data {#sec-data}
+
+The data for this analysis come from the [SFMTA Transit Vehicle Location History (Current Year)](https://data.sf.gov/Transportation/SFMTA-Transit-Vehicle-Location-History-Current-Yea/x344-v6h6/about_data) dataset, published on San Francisco's open data portal (DataSF) by the San Francisco Municipal Transportation Agency (SFMTA). The observational unit in the raw dataset is a single GPS "ping": one report of one transit vehicle's position and speed at one moment in time. Because each vehicle reports repeatedly over the course of a day, a single physical vehicle contributes many rows to the raw data, and the rows are not independent trials in the way that, say, individually surveyed people would be — a point revisited in @sec-results-discussion.
+
+The raw data returned by the API include six fields: `vehicle_position_date_time` (a timestamp for the ping), `vehicle_id` (an identifier for the reporting vehicle), `loc_x` and `loc_y` (longitude and latitude of the vehicle at that moment), `heading` (compass direction of travel, not used in this analysis), and `average_speed` (the vehicle's instantaneous speed, in mph, as reported by the AVL system).
+
+From these raw fields, one additional variable is engineered: `dist_km`, the approximate straight-line (planar) distance, in kilometers, between a vehicle's reported position (`loc_x`, `loc_y`) and a fixed downtown reference point, the Civic Center (latitude 37.7793, longitude -122.4193), where SFMTA's Muni lines converge. Distance is computed by converting the difference in latitude and longitude into kilometers (111.32 km per degree of latitude, adjusted for longitude using the cosine of the reference latitude) and combining them as the hypotenuse of a right triangle. `average_speed` is the response variable and `dist_km` is the predictor in the model described in @sec-methods.
+
+Data were queried from the dataset's public API endpoint (`data.sf.gov/resource/x344-v6h6.json`) for one week of records, from June 1, 2021 through June 7, 2021, capped at 50,000 rows. This window spans both weekdays and a weekend. The sampled week does not contain any public holiday, so calendar effects from holiday scheduling are not a concern for this analysis.
+
+Before model fitting, two kinds of rows from the raw pull of 50,000 records are discarded:
+
+- **21 rows (0.04%)** had coordinates falling outside a bounding box around San Francisco (latitude 37.70-37.83, longitude -122.52 to -122.36), which are almost certainly GPS or sensor errors rather than real vehicle positions.
+- **44,563 rows (89.1%)** recorded an average speed of zero, corresponding to vehicles that were stopped rather than moving.
+
+After these two filters, the revised sample contains **5,436 observations**. This is an important scope decision: excluding stopped vehicles means the model describes vehicles' speed *while in motion*, not their overall average speed including time spent stopped at lights, stops, or in standstill traffic. A vehicle stuck in heavy congestion but still (slowly) moving would show up in this analysis, but a vehicle stopped dead in the same traffic would not — so this analysis speaks to how fast transit vehicles go when they are going, not to how much time they spend not going at all.
+
+Pings are also not reported at perfectly regular intervals, which is a form of measurement irregularity worth noting. For a representative vehicle in the sample, the modal reporting interval is 60 seconds (median gap of 60 seconds, mean 63.6 seconds), consistent with a roughly one-minute automated reporting cycle. Some pings arrive as little as 3 seconds apart and others as much as 300 seconds apart, which likely reflects supplementary transmissions or intermittent gaps in the AVL reporting system rather than genuine changes in vehicle behavior.
+
+```{r fig-speed-distance-scatter}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "Scatter plot of distance from the Civic Center (km, x-axis) and average vehicle speed in mph (y-axis), with fitted linear regression line, for vehicles in motion during June 1-7, 2021."
+# PLACEHOLDER: scatter plot of average_speed vs. dist_km with fitted regression
+# line, e.g.:
+#| fig-width: 6
+#| fig-height: 3.5
+#| fig-pos: "H"
+ggplot(sample_data, aes(x = dist_km, y = average_speed)) +
+ geom_point(alpha = 0.15, size = 0.8) +
+ geom_smooth(method = "lm", se = TRUE, color = "steelblue") +
+ theme_minimal() +
+ labs(x = "Distance from downtown (km)", y = "Average speed (mph)")
+```
+
+@fig-speed-distance-scatter shows the relationship between distance from downtown and average speed for the pings used to fit the model in @sec-methods; a full description of this figure is given alongside the fitted model results in @sec-results-discussion.
+
+# Methods {#sec-methods}
+
+To evaluate whether distance from downtown is associated with vehicle speed, a simple linear regression model is fitted with average speed (in mph) as the response and `dist_km` as the sole predictor:
+
+$$Y_i = \beta_0 +\beta_1 X_i + \varepsilon_i$$
+
+Here, $Y_i$ is the average speed of vehicle-ping $i$ (restricted to pings with nonzero speed), $X_i$ is that ping's distance from the Civic Center in kilometers, $\beta_0$ (intercept) is the expected speed at a distance of zero, and $\beta_1$ (slope) represents the expected change in average speed for each additional kilometer of distance from downtown. The error term $\varepsilon_i$ captures variation in speed not explained by distance alone — for example, differences due to route, vehicle type, time of day, or day of week.
+
+I use a two-sided t-test to compare the null hypothesis $\beta_1 = 0$ (no linear association between distance and speed) against the two-sided alternative $\beta_1 \neq 0$. For this test to be valid, the relationship between distance and speed should be approximately linear, the residuals should have roughly constant variance across fitted values, and the observations should be independent of one another. This last assumption is the most likely to be violated here and is discussed further in @sec-results-discussion.
+
+The independence assumption is the most serious potential pitfall in this analysis. Because each vehicle reports a GPS ping roughly once per minute, many rows in the sample come from the same physical vehicle over a short window of time, and a vehicle's speed at one moment is likely correlated with its speed a minute earlier (e.g., a bus stuck at the same red light will generate several consecutive slow pings). This clustering means the observations are not independent trials in the way the model assumes, which can make the reported standard errors artificially small and the significance of the slope look stronger than it really is, even though the point estimate of the slope itself would be largely unaffected. A second pitfall comes from the exclusion of zero-speed pings (89.1% of the raw pull, see @sec-data): the model describes speed conditional on the vehicle already being in motion, so it cannot speak to how much time vehicles spend stopped, which is itself an important part of how "slow" a trip near downtown feels to a rider. Finally, omitting other predictors (route, vehicle type, time of day, day of week) means any explanatory power those variables have is left in the error term $\varepsilon_i$, which is part of why the model's $R^2$ is small — a small $R^2$ here reflects the narrow scope of a one-variable model as much as it reflects a genuinely weak relationship with distance.
+
+This analysis is implemented using the R programming language [@Rlang].
+
+# Results and Discussion {#sec-results-discussion}
+
+```{r speed-dist-lm}
+#| echo: false
+#| warning: false
+#| message: false
+quick_check <- lm(average_speed ~ dist_km, data = sample_data)
+```
+
+The fitted model is:
+
+$$\widehat{\text{average\_speed}}_i = 12.432 + 0.865 \times \text{dist\_km}_i$$
+
+The estimated intercept is $b_0 = 12.432$ mph (standard error 0.300), and the estimated slope is $b_1 = 0.865$ mph per additional km of distance (standard error 0.067). In plain terms: a vehicle right at the Civic Center is predicted to average about 12.4 mph while moving, and predicted average speed rises by about 0.87 mph for every additional kilometer from the Civic Center. The correlation between distance and speed is $r = 0.172$, consistent with a weak positive linear association. @fig-speed-distance-scatter shows the fitted line rising gently from about 12 mph near downtown to about 20 mph at 10 km out. The plot also shows the data separating into two loose bands — a dense cluster under about 25 mph present at every distance, and a lighter but consistent scatter between roughly 25 and 65 mph that also appears across the full range of distances rather than growing systematically farther from downtown. This banding is a visual preview of why $R^2$ turns out small: distance shifts the average of the line only slightly, while most of the spread in speed comes from whatever separates the lower band of readings from the upper one, not from distance itself. One point near 3 km with a reported speed close to 90 mph stands apart from the rest of the data.
+
+The t-statistic for the slope is 12.85 on 5,434 residual degrees of freedom, giving a p-value below $2\times 10^{-16}$. This is far below conventional significance thresholds, so I reject the null hypothesis $\beta_1 = 0$: there is very strong statistical evidence that average speed is related to distance from downtown, in the direction the introduction anticipated. However, the model's $R^2$ is only 0.0295 (adjusted $R^2 = 0.0293$), meaning distance from downtown explains only about 3% of the variation in average speed among moving vehicles; the residual standard error is 11.03 mph, large relative to typical speeds in the sample. The overall F-test agrees with the t-test for the single slope (F = 165.2 on 1 and 5,434 degrees of freedom, p < $2.2\times 10^{-16}$).
+
+```{r fig-speed-residual}
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-cap: "Scatter plot of fitted values (x-axis) and residuals (y-axis) for a simple linear regression with average speed (mph) as the response and distance from the Civic Center (km) as the predictor."
+#| fig-width: 6
+#| fig-height: 3.5
+#| fig-pos: "H"
+plot_dat <- data.frame(resid = resid(quick_check), fitted = fitted(quick_check))
+ggplot(plot_dat, aes(x = fitted, y = resid)) +
+ geom_point() +
+ geom_hline(yintercept = 0, linetype = "dashed") +
+ theme_minimal()
+```
+
+@fig-speed-residual checks whether the linear fit is a reasonable summary of the relationship, and shows two clear departures from the ideal case. First, the residuals are right-skewed rather than symmetric: the bulk of points fall between about -15 and +10, but a long tail of positive residuals stretches up to 40-50, with one point near 77. Negative residuals, by contrast, never go much below about -15 to -18. Second, the lower edge of the point cloud is not flat — it slopes upward together with the rest of the cloud, forming a diagonal floor. This is a direct consequence of `average_speed` being bounded at zero: the most negative a residual can be at a given fitted value is roughly $0 - \text{fitted}$, so as fitted values increase, the floor for how negative a residual can go drops correspondingly, producing the slanted lower boundary. Together, these two patterns mean the residuals are not normally distributed, even though the spread of the residuals looks reasonably similar across the range of fitted values (roughly 12 to 21 mph). Linearity and constant variance are therefore not seriously violated; normality is the assumption that does not hold here, and it fails in a way that is exactly what you'd expect from a speed variable that cannot go below zero. One point, with a residual near 77 at a fitted value of about 15 (corresponding to an observed speed near 90 mph), is far outside the rest of the sample and is more consistent with a sensor or unit-recording error than a real transit vehicle speed, though with $n = 5{,}436$ its influence on the fitted line is likely small.
+
+## Robustness to the choice of downtown reference point
+
+Because `dist_km` depends on an arbitrary choice of downtown reference point, I refit the model using two alternatives: Union Square and the centroid of all vehicle positions in the sample.
+
+| Reference point | Slope | $R^2$ | p-value |
+|---|---|---|---|
+| Civic Center    | 0.865 | 0.0295 | $2.9\times 10^{-37}$ |
+| Union Square     | 0.646 | 0.0235 | $5.5\times 10^{-30}$ |
+| Sample centroid  | 0.936 | 0.0214 | $2.4\times 10^{-27}$ |
+
+: Sensitivity of the fitted slope, $R^2$, and p-value to the choice of downtown reference point used to construct `dist_km`. {#tbl-robustness}
+
+@tbl-robustness shows the positive, highly significant relationship holds no matter which of the three downtown reference points is used, though the slope's magnitude shifts somewhat (0.65 to 0.94 mph per km) and $R^2$ stays in the same small range (roughly 2-3%) across all three — the qualitative finding does not depend on this particular modeling choice.
+
+## Key findings and implications for the research question
+
+The original question was whether transit vehicle speed varies with distance from downtown San Francisco, and how much of that variation distance alone can explain. The results give a two-part answer. First, yes — there is a real, highly statistically significant, positive relationship between distance and speed while moving, robust to the choice of downtown reference point. Second, distance alone explains only about 3% of the variation in speed. So while the "downtown is slower" intuition is directionally supported, it is far from the whole story. The residual plot makes this concrete: the dense band of unusually fast readings (25-65 mph) appears at every distance rather than concentrating near downtown or far from it, which means whatever separates fast vehicles from typical ones is not distance itself — it is likely route, vehicle type, or some other unmodeled factor. This has a direct practical implication: interventions framed narrowly around "downtown vs. not downtown" may be missing most of what actually drives slow transit speeds, since the bulk of the unexplained variation is spread evenly across distances rather than concentrated downtown.
+
+Limitations qualify these results. The residual diagnostics show that while linearity and constant variance are reasonably well satisfied, the normality-of-errors assumption is violated: residuals are right-skewed with a hard, distance-dependent floor, a direct consequence of speed being bounded at zero. With $n = 5{,}436$, the Central Limit Theorem gives some cover for the validity of the t-test despite this, but it is a distinct assumption violation worth naming alongside independence, not folded into it. On independence: because each vehicle reports a GPS ping roughly once per minute, many rows come from the same vehicle over a short window, so observations are unlikely to be truly independent; this could make the reported standard errors and p-values overstate the significance of the slope, even though the point estimate itself would likely be largely unaffected. One extreme point (a reported ~90 mph observation) likely reflects a sensor or recording error rather than a real vehicle speed; given the sample size its leverage on the fit is probably small, but it was not formally checked or excluded. The analysis also explicitly excludes stopped vehicles (89.1% of the raw pull), so it measures speed while in motion, not overall trip speed — a vehicle stuck for a long time in downtown traffic would not appear "slow" here, it would simply be excluded, likely understating how much downtown congestion affects riders' actual door-to-door travel time. Finally, the model omits other factors that plausibly affect speed — route, vehicle type, time of day, day of week — and covers a single week in June 2021, so the small $R^2$ partly reflects a genuinely weak relationship with distance and partly reflects the absence of these other predictors.
+
+The most direct extension would be multiple regression, adding day-type (SFMTA's Weekday/Saturday/Sunday-Holiday distinction), time of day, route, and vehicle type; this would likely raise $R^2$ substantially, since the residual banding suggests a categorical factor, not distance, is driving much of the remaining variation. A second improvement would address the independence concern — aggregating pings to one observation per vehicle-trip, or using a model that accounts for clustering by vehicle. A third would formally check the influence of the ~90 mph outlier (e.g., Cook's distance) and decide explicitly whether to exclude it, rather than noting it without resolution. A fourth would model stopped time separately rather than excluding it, since dwell time is directly relevant to the congestion question motivating this analysis. Extending beyond one week — across seasons, or comparing typical weeks to disrupted ones — would help establish how stable these estimates are over time.
+
+# References
