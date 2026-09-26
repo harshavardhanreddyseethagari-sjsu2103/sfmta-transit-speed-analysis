@@ -101,3 +101,6 @@ one_vehicle <- sample_data |>
     ))
   )
 summary(one_vehicle$time_gap_sec)
+
+# save scatter plot, run the following line in R console
+# ggsave("output/scatter_plot.png", width = 8, height = 5)
